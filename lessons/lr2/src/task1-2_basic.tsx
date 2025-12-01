@@ -20,20 +20,14 @@ import React, { useState } from 'react';
 // - onClick: () => void
 // - variant?: 'primary' | 'secondary'
 
-interface ButtonProps{
-  children: React.ReactNode,
-  onClick: () => void,
-  variant?: 'primary' | 'secondary'
-}
-
 // TODO 1.2: Типизируйте компонент Button
-function Button(buttonProps: ButtonProps) {
+function Button(/* TODO: добавьте типизацию */) {
   return (
     <button
-      className={`btn btn--${buttonProps.variant}`}
-      onClick={buttonProps.onClick}
+      className={`btn btn--${/* TODO */}`}
+      onClick={/* TODO */}
     >
-      {buttonProps.children}
+      {/* TODO */}
     </button>
   );
 }
@@ -43,20 +37,14 @@ function Button(buttonProps: ButtonProps) {
 // - email: string
 // - isOnline: boolean
 
-interface UserCardProps{
-  name: string,
-  email: string,
-  isOnline: boolean
-}
-
 // TODO 1.4: Типизируйте компонент UserCard
-function UserCard(ucp: UserCardProps) {
+function UserCard(/* TODO: добавьте типизацию */) {
   return (
     <div className="user-card">
-      <h3>{ucp.name}</h3>
-      <p>{ucp.email}</p>
-      <span className={`user card--${ucp.isOnline}`}>
-        {ucp.isOnline}
+      <h3>{/* TODO: name */}</h3>
+      <p>{/* TODO: email */}</p>
+      <span className={/* TODO: добавьте класс на основе isOnline */}>
+        {/* TODO: отобразите статус */}
       </span>
     </div>
   );
@@ -71,16 +59,10 @@ function UserCard(ucp: UserCardProps) {
 // - text: string
 // - completed: boolean
 
-interface Todo{
-  id:number,
-  text: string,
-  completed: boolean
-}
-
 // TODO 3.2: Типизируйте компонент TodoApp
 function TodoApp() {
   // TODO 3.3: Создайте состояние todos с типом Todo[]
-  const [todos, setTodos] = useState<Todo[]>([]);
+  const [todos, setTodos] = useState(/* TODO */);
   const [inputValue, setInputValue] = useState('');
 
   // TODO 3.4: Реализуйте addTodo
@@ -88,18 +70,13 @@ function TodoApp() {
     if (inputValue.trim()) {
       // TODO: создайте новый todo и добавьте в массив
       // Подсказка: id можно сделать как Date.now()
-      const newTodo: Todo = {
-        id: Date.now(),
-        text: inputValue.trim(),
-        completed: false
-      } 
       setInputValue('');
     }
   };
 
   // TODO 3.5: Реализуйте toggleTodo
   const toggleTodo = (id: number) => {
-    todos[id].completed != todos[id].completed
+    // TODO: измените completed для todo с данным id
   };
 
   // TODO 3.6: Реализуйте deleteTodo
