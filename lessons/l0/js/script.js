@@ -18,7 +18,7 @@ function initSlider(slider) {
     }
 
     nextBtn.addEventListener('click', () => goTo(index + 1));
-    prevBtn.addEventListener('click', () => goTo(index - 1));
+    prevBtn.addEventListener('click', () => goTo(index - 1));+
 
     document.addEventListener('keydown', e => {
         if (slider.offsetParent === null) return;  
