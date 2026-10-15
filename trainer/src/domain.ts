@@ -122,44 +122,37 @@ const emptySet: TrainingSet = {
     tasks: [],
 };
 
-console.log(findTask(firstSet, 'ts-1'));       
-console.log(findTask(firstSet, 'no-such-id'));  
-console.log(filterTasksByTopic(firstSet, 'typescript'));
-console.log(filterTasksByTopic(firstSet, 'react'));      
-console.log(filterTasksByTopic(firstSet, 'python'));     
-console.log(filterTasksByTopic(emptySet, 'react'));      
-console.log(countProgress(emptySet, []));              
-console.log(countProgress(firstSet, [
-  { taskId: 'ts-1', kind: 'single-choice', optionId: 'b' },
-]));                                                      
-console.log(countProgress(firstSet, [
-  { taskId: 'ts-1', kind: 'single-choice', optionId: 'b' },
-  { taskId: 'react-1', kind: 'short-text', text: 'Props снаружи, state внутри.' },
-]));                                                    
-console.log(countProgress(firstSet, [
-  { taskId: 'unknown', kind: 'single-choice', optionId: 'a' },
-]));                                                      
-console.log(countProgress(firstSet, [
-  { taskId: 'ts-1', kind: 'single-choice', optionId: 'b' },
-  { taskId: 'react-1', kind: 'short-text', text: '    ' },
-]));  
+// console.log(findTask(firstSet, 'ts-1'));       
+// console.log(findTask(firstSet, 'no-such-id'));  
+// console.log(filterTasksByTopic(firstSet, 'typescript'));
+// console.log(filterTasksByTopic(firstSet, 'react'));      
+// console.log(filterTasksByTopic(firstSet, 'python'));     
+// console.log(filterTasksByTopic(emptySet, 'react'));      
+// console.log(countProgress(emptySet, []));              
+// console.log(countProgress(firstSet, [
+//   { taskId: 'ts-1', kind: 'single-choice', optionId: 'b' },
+// ]));                                                      
+// console.log(countProgress(firstSet, [
+//   { taskId: 'ts-1', kind: 'single-choice', optionId: 'b' },
+//   { taskId: 'react-1', kind: 'short-text', text: 'Props снаружи, state внутри.' },
+// ]));                                                    
+// console.log(countProgress(firstSet, [
+//   { taskId: 'unknown', kind: 'single-choice', optionId: 'a' },
+// ]));                                                      
+// console.log(countProgress(firstSet, [
+//   { taskId: 'ts-1', kind: 'single-choice', optionId: 'b' },
+//   { taskId: 'react-1', kind: 'short-text', text: '    ' },
+// ]));  
                               
-const beforeSet = JSON.stringify(firstSet);
-const beforeAnswers = JSON.stringify(answers);
+// const beforeSet = JSON.stringify(firstSet);
+// const beforeAnswers = JSON.stringify(answers);
 
-findTask(firstSet, 'ts-1');
-filterTasksByTopic(firstSet, 'typescript');
-countProgress(firstSet, answers);
+// findTask(firstSet, 'ts-1');
+// filterTasksByTopic(firstSet, 'typescript');
+// countProgress(firstSet, answers);
 
-console.log('set unchanged     →', beforeSet === JSON.stringify(firstSet));
-console.log('answers unchanged →', beforeAnswers === JSON.stringify(answers));
+// console.log('set unchanged     →', beforeSet === JSON.stringify(firstSet));
+// console.log('answers unchanged →', beforeAnswers === JSON.stringify(answers));
 
-export {
-  findTask,
-  filterTasksByTopic,
-  countProgress,
-  firstSet,
-  secondSet,
-  emptySet,
-  answers,
-};
+export type { SingleChoiceTask, ShortTextTask, Task, TrainingSet, SingleChoiceAnswer, ShortTextAnswer, Answer};
+export { findTask, filterTasksByTopic, countProgress, firstSet, secondSet, emptySet };
