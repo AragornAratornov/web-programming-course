@@ -1,48 +1,165 @@
-import { useState } from "react";
-import {trainingSet,
+import { useEffect, useReducer, useRef, useState } from "react";
+import {
+  DRAFT_STORAGE_KEY,
+  DRAFT_VERSION,
   countProgress,
   findAnswer,
   isAnswerFilled,
+  parseDraft,
+  trainingSet,
   type Answer,
+  type Draft,
 } from "./domain";
 import { TaskCard } from "./components/TaskCard";
 
-type AttemptStatus = "in-progress" | "submitted";
+type Status = "in-progress" | "submitted";
+
+type State = {
+  answers: Answer[];
+  currentIndex: number;
+  status: Status;
+  restored: boolean;
+};
+
+type Action =
+  | { type: "answerChanged"; answer: Answer }
+  | { type: "moved"; index: number }
+  | { type: "restored"; payload: Draft }
+  | { type: "reset" }
+  | { type: "submitted" };
+
+const totalTasks = trainingSet.tasks.length;
+
+function initialState(): State {
+  return {
+    answers: [],
+    currentIndex: 0,
+    status: "in-progress",
+    restored: false,
+  };
+}
+
+function indexOfTask(taskId: string): number {
+  const idx = trainingSet.tasks.findIndex((t) => t.id === taskId);
+  return idx === -1 ? 0 : idx;
+}
+
+function reducer(state: State, action: Action): State {
+  switch (action.type) {
+    case "answerChanged": {
+      if (state.status === "submitted") return state;
+      const next = [
+        ...state.answers.filter((a) => a.taskId !== action.answer.taskId),
+        action.answer,
+      ];
+      return { ...state, answers: next };
+    }
+    case "moved": {
+      if (state.status === "submitted") return state;
+      if (action.index < 0 || action.index >= totalTasks) return state;
+      return { ...state, currentIndex: action.index };
+    }
+    case "restored": {
+      return {
+        answers: action.payload.answers,
+        currentIndex: indexOfTask(action.payload.taskId),
+        status: action.payload.status,
+        restored: true,
+      };
+    }
+    case "reset":
+      return initialState();
+    case "submitted": {
+      if (state.status === "submitted") return state;
+      return { ...state, status: "submitted" };
+    }
+    default:
+      return state;
+  }
+}
+
+type StorageNotice =
+  | { kind: "none" }
+  | { kind: "corrupted"; message: string }
+  | { kind: "foreign"; setId: string }
+  | { kind: "write-failed" };
 
 export default function App() {
-  const [answers, setAnswers] = useState<Answer[]>([]);
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [status, setStatus] = useState<AttemptStatus>("in-progress");
+  const [state, dispatch] = useReducer(reducer, undefined, initialState);
+  const [notice, setNotice] = useState<StorageNotice>({ kind: "none" });
+  const readOnce = useRef(false);
 
   const tasks = trainingSet.tasks;
-  const totalTasks = tasks.length;
-  const currentTask = tasks[currentIndex];
+  const currentTask = tasks[state.currentIndex];
   const currentAnswer = currentTask
-    ? findAnswer(answers, currentTask.id)
+    ? findAnswer(state.answers, currentTask.id)
     : undefined;
+  const progress = countProgress(trainingSet, state.answers);
 
-  const progress = countProgress(trainingSet, answers);
+  // Чтение черновика — строго один раз при монтировании.
+  useEffect(() => {
+    if (readOnce.current) return;
+    readOnce.current = true;
+    let raw: string | null = null;
+    try {
+      raw = localStorage.getItem(DRAFT_STORAGE_KEY);
+    } catch {
+      // Чтение недоступно — продолжаем с пустой попыткой, но без блокировки ввода.
+      setNotice({ kind: "write-failed" });
+      return;
+    }
+    const result = parseDraft(raw, trainingSet);
+    switch (result.kind) {
+      case "empty":
+        break;
+      case "ok":
+        dispatch({ type: "restored", payload: result.draft });
+        break;
+      case "corrupted":
+        setNotice({ kind: "corrupted", message: result.message });
+        break;
+      case "foreign":
+        setNotice({ kind: "foreign", setId: result.setId });
+        break;
+    }
+  }, []);
+
+  // Запись черновика — только после попытки чтения.
+  useEffect(() => {
+    if (!readOnce.current) return;
+    // Если черновик повреждён/чужой и пользователь ещё не решил — не перезаписываем.
+    if (notice.kind === "corrupted" || notice.kind === "foreign") return;
+    const draft: Draft = {
+      version: DRAFT_VERSION,
+      setId: trainingSet.id,
+      taskId: tasks[state.currentIndex]?.id ?? "",
+      answers: state.answers,
+      status: state.status,
+    };
+    try {
+      localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
+      if (notice.kind === "write-failed") setNotice({ kind: "none" });
+    } catch {
+      setNotice({ kind: "write-failed" });
+    }
+  }, [state.answers, state.currentIndex, state.status, notice.kind, tasks]);
 
   function handleAnswerChange(newAnswer: Answer) {
-    if (status === "submitted") return;
-    setAnswers((prev) => [
-      ...prev.filter((a) => a.taskId !== newAnswer.taskId),
-      newAnswer,
-    ]);
+    dispatch({ type: "answerChanged", answer: newAnswer });
   }
 
   function goPrev() {
-    if (currentIndex > 0) setCurrentIndex((i) => i - 1);
+    dispatch({ type: "moved", index: state.currentIndex - 1 });
   }
 
   function goNext() {
-    if (currentIndex < totalTasks - 1) setCurrentIndex((i) => i + 1);
+    dispatch({ type: "moved", index: state.currentIndex + 1 });
   }
 
   function unfinishedList(): string[] {
     const result: string[] = [];
     tasks.forEach((task, i) => {
-      const answer = findAnswer(answers, task.id);
+      const answer = findAnswer(state.answers, task.id);
       if (!answer || !isAnswerFilled(answer)) {
         result.push(`${i + 1}. ${task.prompt}`);
       }
@@ -51,7 +168,7 @@ export default function App() {
   }
 
   function handleFinish() {
-    if (status === "submitted") return;
+    if (state.status === "submitted") return;
     const unfinished = unfinishedList();
     if (unfinished.length > 0) {
       const ok = window.confirm(
@@ -61,16 +178,48 @@ export default function App() {
       );
       if (!ok) return;
     }
-    setStatus("submitted");
+    dispatch({ type: "submitted" });
   }
 
-  function handleRestart() {
-    setAnswers([]);
-    setCurrentIndex(0);
-    setStatus("in-progress");
+  function handleReset() {
+    if (!window.confirm("Сбросить черновик и начать новую попытку?")) return;
+    try {
+      localStorage.removeItem(DRAFT_STORAGE_KEY);
+    } catch {
+      // Даже если удалить не удалось — продолжаем в памяти.
+    }
+    setNotice({ kind: "none" });
+    dispatch({ type: "reset" });
   }
 
-  if (totalTasks === 0) {
+  function renderNotice() {
+    switch (notice.kind) {
+      case "none":
+        return null;
+      case "corrupted":
+        return (
+          <div role="alert" style={{ border: "1px solid #c33", padding: "0.5rem", margin: "0.5rem 0" }}>
+            <p>Черновик повреждён: {notice.message}. Ввод доступен, сброс — по кнопке.</p>
+            <button type="button" onClick={handleReset}>Сбросить черновик</button>
+          </div>
+        );
+      case "foreign":
+        return (
+          <div role="alert" style={{ border: "1px solid #c33", padding: "0.5rem", margin: "0.5rem 0" }}>
+            <p>Черновик относится к набору «{notice.setId}», а не к «{trainingSet.id}».</p>
+            <button type="button" onClick={handleReset}>Сбросить и начать заново</button>
+          </div>
+        );
+      case "write-failed":
+        return (
+          <p role="status" style={{ color: "#a60" }}>
+            Черновик не сохраняется: localStorage недоступен. Ввод продолжается в этой вкладке.
+          </p>
+        );
+    }
+  }
+
+  if (tasks.length === 0) {
     return (
       <main style={{ padding: "1rem", fontFamily: "system-ui" }}>
         <h1>{trainingSet.title}</h1>
@@ -79,16 +228,17 @@ export default function App() {
     );
   }
 
-  if (status === "submitted") {
+  if (state.status === "submitted") {
     return (
       <main style={{ padding: "1rem", fontFamily: "system-ui" }}>
         <h1>{trainingSet.title}</h1>
+        {renderNotice()}
         <p>Попытка завершена</p>
         <p>Прогресс: {progress.filled} / {progress.total}</p>
 
         <h2>Обзор ответов</h2>
         {tasks.map((task, i) => {
-          const answer = findAnswer(answers, task.id);
+          const answer = findAnswer(state.answers, task.id);
           return (
             <section key={task.id}>
               <p>Задание {i + 1}</p>
@@ -97,7 +247,7 @@ export default function App() {
           );
         })}
 
-        <button type="button" onClick={handleRestart} style={{ marginTop: "1rem" }}>
+        <button type="button" onClick={handleReset} style={{ marginTop: "1rem" }}>
           Начать новую попытку
         </button>
       </main>
@@ -107,7 +257,8 @@ export default function App() {
   return (
     <main style={{ padding: "1rem", fontFamily: "system-ui" }}>
       <h1>{trainingSet.title}</h1>
-      <p>Задание {currentIndex + 1} / {totalTasks}</p>
+      {renderNotice()}
+      <p>Задание {state.currentIndex + 1} / {tasks.length}</p>
       <p>Прогресс: {progress.filled} / {progress.total}</p>
 
       {currentTask ? (
@@ -122,10 +273,10 @@ export default function App() {
       )}
 
       <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem" }}>
-        <button type="button" onClick={goPrev} disabled={currentIndex === 0}>
+        <button type="button" onClick={goPrev} disabled={state.currentIndex === 0}>
           Назад
         </button>
-        {currentIndex < totalTasks - 1 ? (
+        {state.currentIndex < tasks.length - 1 ? (
           <button type="button" onClick={goNext}>Дальше</button>
         ) : (
           <button type="button" onClick={handleFinish}>Завершить попытку</button>
