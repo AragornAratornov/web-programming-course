@@ -4,10 +4,21 @@ type Props = {
   task: Task;
   answer?: Answer;
   onAnswerChange?: (answer: Answer) => void;
+  onAnswerClear?: () => void;
   readOnly?: boolean;
+  disabled?: boolean;
+  pending?: boolean;
 };
 
-export function TaskCard({ task, answer, onAnswerChange, readOnly = false }: Props) {
+export function TaskCard({
+  task,
+  answer,
+  onAnswerChange,
+  onAnswerClear,
+  readOnly = false,
+  disabled = false,
+  pending = false,
+}: Props) {
   const selectedOptionId =
     answer?.kind === "single-choice" ? answer.optionId : undefined;
   const shortTextValue = answer?.kind === "short-text" ? answer.text : "";
@@ -27,9 +38,9 @@ export function TaskCard({ task, answer, onAnswerChange, readOnly = false }: Pro
                 name={task.id}
                 value={opt.id}
                 checked={selectedOptionId === opt.id}
-                disabled={readOnly}
+                disabled={readOnly || disabled}
                 onChange={() => {
-                  if (readOnly || !onAnswerChange) return;
+                  if (readOnly || disabled || !onAnswerChange) return;
                   onAnswerChange({
                     taskId: task.id,
                     kind: "single-choice",
@@ -44,11 +55,11 @@ export function TaskCard({ task, answer, onAnswerChange, readOnly = false }: Pro
       ) : (
         <textarea
           value={shortTextValue}
-          disabled={readOnly}
+          disabled={readOnly || disabled}
           rows={4}
           placeholder="Введите ответ..."
           onChange={(e) => {
-            if (readOnly || !onAnswerChange) return;
+            if (readOnly || disabled || !onAnswerChange) return;
             onAnswerChange({
               taskId: task.id,
               kind: "short-text",
@@ -57,6 +68,19 @@ export function TaskCard({ task, answer, onAnswerChange, readOnly = false }: Pro
           }}
         />
       )}
+
+      {!readOnly && onAnswerClear && (
+        <button
+          type="button"
+          onClick={onAnswerClear}
+          disabled={disabled || answer === undefined}
+          style={{ marginTop: "0.5rem" }}
+        >
+          Очистить ответ
+        </button>
+      )}
+
+      {pending && <p style={{ color: "#a60" }}>Не подтверждено сервером</p>}
     </article>
   );
 }

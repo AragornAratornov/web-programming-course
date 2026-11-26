@@ -1,151 +1,388 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import {
-  DRAFT_STORAGE_KEY,
-  DRAFT_VERSION,
   countProgress,
   findAnswer,
-  isAnswerFilled,
-  parseDraft,
-  trainingSet,
+  findTask,
+  validateAnswerForTask,
   type Answer,
+  type Attempt,
+  type Result,
+  type TrainingSet,
+  DRAFT_VERSION,
+  clearDraft,
+  parseDraft,
+  readDraft,
+  writeDraft,
   type Draft,
 } from "./domain";
+import {
+  createAttempt,
+  deleteAnswer,
+  errorMessage,
+  getAttempt,
+  getResult,
+  isStatus,
+  loadSet,
+  putAnswer,
+  submitAttempt,
+} from "./api";
 import { TaskCard } from "./components/TaskCard";
+import { ProgressBar } from "./components/ProgressBar";
+import { ResultView } from "./components/ResultView";
 
-type Status = "in-progress" | "submitted";
+const SET_ID = "web-basics";
+
+type FailedAction =
+  | { kind: "put"; answer: Answer }
+  | { kind: "delete"; taskId: string }
+  | { kind: "submit" }
+  | { kind: "init" };
+
+type RequestState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "error"; message: string; lastFailed: FailedAction };
 
 type State = {
+  set: TrainingSet | null;
+  // Серверное
+  attemptId: string | null;
+  serverAnswers: Answer[];
+  attemptStatus: "in-progress" | "submitted" | null;
+  result: Result | null;
+
+  // Локальное
   answers: Answer[];
+  pending: Record<string, true>;
   currentIndex: number;
-  status: Status;
-  restored: boolean;
+
+  // Запросы
+  request: RequestState;
 };
 
 type Action =
+  | { type: "setLoaded"; set: TrainingSet }
+  | { type: "attemptCreated"; attempt: Attempt }
+  | { type: "attemptLoaded"; attempt: Attempt; result: Result | null }
   | { type: "answerChanged"; answer: Answer }
+  | { type: "answerConfirmed"; answer: Answer }
+  | { type: "answerCleared"; taskId: string }
   | { type: "moved"; index: number }
-  | { type: "restored"; payload: Draft }
-  | { type: "reset" }
-  | { type: "submitted" };
-
-const totalTasks = trainingSet.tasks.length;
+  | { type: "requestStarted" }
+  | { type: "requestFailed"; message: string; lastFailed: FailedAction }
+  | { type: "requestReset" }
+  | { type: "submitted"; result: Result }
+  | { type: "reset" };
 
 function initialState(): State {
   return {
+    set: null,
+    attemptId: null,
+    serverAnswers: [],
+    attemptStatus: null,
+    result: null,
     answers: [],
+    pending: {},
     currentIndex: 0,
-    status: "in-progress",
-    restored: false,
+    request: { status: "idle" },
   };
 }
 
-function indexOfTask(taskId: string): number {
-  const idx = trainingSet.tasks.findIndex((t) => t.id === taskId);
+function taskIndex(set: TrainingSet | null, taskId: string): number {
+  if (!set) return 0;
+  const idx = set.tasks.findIndex((t) => t.id === taskId);
   return idx === -1 ? 0 : idx;
 }
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
+    case "setLoaded":
+      return { ...state, set: action.set };
+
+    case "attemptCreated":
+    case "attemptLoaded": {
+      const attempt = action.type === "attemptCreated" ? action.attempt : action.attempt;
+      const result = action.type === "attemptLoaded" ? action.result : null;
+      const restoredAnswers =
+        action.type === "attemptLoaded" ? attempt.answers : [];
+      return {
+        ...state,
+        attemptId: attempt.id,
+        serverAnswers: attempt.answers,
+        attemptStatus: attempt.status,
+        answers: restoredAnswers,
+        pending: {},
+        currentIndex: 0,
+        result,
+      };
+    }
+
     case "answerChanged": {
-      if (state.status === "submitted") return state;
+      if (state.attemptStatus === "submitted") return state;
       const next = [
         ...state.answers.filter((a) => a.taskId !== action.answer.taskId),
         action.answer,
       ];
-      return { ...state, answers: next };
-    }
-    case "moved": {
-      if (state.status === "submitted") return state;
-      if (action.index < 0 || action.index >= totalTasks) return state;
-      return { ...state, currentIndex: action.index };
-    }
-    case "restored": {
       return {
-        answers: action.payload.answers,
-        currentIndex: indexOfTask(action.payload.taskId),
-        status: action.payload.status,
-        restored: true,
+        ...state,
+        answers: next,
+        pending: { ...state.pending, [action.answer.taskId]: true },
       };
     }
+
+    case "answerConfirmed": {
+      const serverAnswers = [
+        ...state.serverAnswers.filter((a) => a.taskId !== action.answer.taskId),
+        action.answer,
+      ];
+      const pending = { ...state.pending };
+      delete pending[action.answer.taskId];
+      return { ...state, serverAnswers, pending, request: { status: "idle" } };
+    }
+
+    case "answerCleared": {
+      const serverAnswers = state.serverAnswers.filter(
+        (a) => a.taskId !== action.taskId
+      );
+      const answers = state.answers.filter((a) => a.taskId !== action.taskId);
+      const pending = { ...state.pending };
+      delete pending[action.taskId];
+      return { ...state, serverAnswers, answers, pending, request: { status: "idle" } };
+    }
+
+    case "moved": {
+      if (!state.set) return state;
+      if (action.index < 0 || action.index >= state.set.tasks.length) return state;
+      return { ...state, currentIndex: action.index };
+    }
+
+    case "requestStarted":
+      return { ...state, request: { status: "loading" } };
+
+    case "requestFailed":
+      return {
+        ...state,
+        request: {
+          status: "error",
+          message: action.message,
+          lastFailed: action.lastFailed,
+        },
+      };
+
+    case "requestReset":
+      return { ...state, request: { status: "idle" } };
+
+    case "submitted":
+      return {
+        ...state,
+        attemptStatus: "submitted",
+        result: action.result,
+        request: { status: "idle" },
+      };
+
     case "reset":
       return initialState();
-    case "submitted": {
-      if (state.status === "submitted") return state;
-      return { ...state, status: "submitted" };
-    }
+
     default:
       return state;
   }
 }
 
-type StorageNotice =
-  | { kind: "none" }
-  | { kind: "corrupted"; message: string }
-  | { kind: "foreign"; setId: string }
-  | { kind: "write-failed" };
-
 export default function App() {
   const [state, dispatch] = useReducer(reducer, undefined, initialState);
-  const [notice, setNotice] = useState<StorageNotice>({ kind: "none" });
-  const readOnce = useRef(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [storageWarning, setStorageWarning] = useState<string | null>(null);
+  const [draftNotice, setDraftNotice] = useState<
+    { kind: "none" } | { kind: "corrupted"; message: string } | { kind: "foreign"; setId: string }
+  >({ kind: "none" });
+  const bootstrapped = useRef(false);
 
-  const tasks = trainingSet.tasks;
-  const currentTask = tasks[state.currentIndex];
-  const currentAnswer = currentTask
-    ? findAnswer(state.answers, currentTask.id)
-    : undefined;
-  const progress = countProgress(trainingSet, state.answers);
+  // ---------- Инициализация: набор -> attempt -> черновик ----------
 
-  // Чтение черновика — строго один раз при монтировании.
   useEffect(() => {
-    if (readOnce.current) return;
-    readOnce.current = true;
-    let raw: string | null = null;
-    try {
-      raw = localStorage.getItem(DRAFT_STORAGE_KEY);
-    } catch {
-      // Чтение недоступно — продолжаем с пустой попыткой, но без блокировки ввода.
-      setNotice({ kind: "write-failed" });
-      return;
-    }
-    const result = parseDraft(raw, trainingSet);
-    switch (result.kind) {
-      case "empty":
-        break;
-      case "ok":
-        dispatch({ type: "restored", payload: result.draft });
-        break;
-      case "corrupted":
-        setNotice({ kind: "corrupted", message: result.message });
-        break;
-      case "foreign":
-        setNotice({ kind: "foreign", setId: result.setId });
-        break;
-    }
+    if (bootstrapped.current) return;
+    bootstrapped.current = true;
+
+    (async () => {
+      try {
+        const set = await loadSet(SET_ID);
+        dispatch({ type: "setLoaded", set });
+
+        // Пробуем прочитать черновик A4.
+        const raw = readDraft();
+        const draftResult = parseDraft(raw, set);
+        let attemptIdFromDraft: string | null = null;
+
+        if (draftResult.kind === "ok") {
+          attemptIdFromDraft = draftResult.draft.attemptId;
+        } else if (draftResult.kind === "corrupted") {
+          setDraftNotice({ kind: "corrupted", message: draftResult.message });
+        } else if (draftResult.kind === "foreign") {
+          setDraftNotice({ kind: "foreign", setId: draftResult.setId });
+        }
+
+        // Если черновик повреждён/чужой — не восстанавливаем attempt, начинаем новую попытку.
+        if (draftResult.kind === "corrupted" || draftResult.kind === "foreign") {
+          const created = await createAttempt(set.id);
+          dispatch({ type: "attemptCreated", attempt: created });
+          return;
+        }
+
+        // Пытаемся восстановить серверную попытку по attemptId.
+        if (attemptIdFromDraft) {
+          try {
+            const attempt = await getAttempt(attemptIdFromDraft);
+            let result: Result | null = null;
+            if (attempt.status === "submitted") {
+              try {
+                result = await getResult(attemptIdFromDraft);
+              } catch {
+                // 409 теоретически не должен прийти для submitted; result останется null
+              }
+            }
+            dispatch({ type: "attemptLoaded", attempt, result });
+            return;
+          } catch (e) {
+            if (!isStatus(e, 404)) throw e;
+            // 404 — попытка исчезла (сервер перезапущен). Создаём новую.
+          }
+        }
+
+        const created = await createAttempt(set.id);
+        dispatch({ type: "attemptCreated", attempt: created });
+      } catch (e) {
+        dispatch({
+          type: "requestFailed",
+          message: errorMessage(e),
+          lastFailed: { kind: "init" },
+        });
+      }
+    })();
   }, []);
 
-  // Запись черновика — только после попытки чтения.
+  // ---------- Синхронизация черновика ----------
+
   useEffect(() => {
-    if (!readOnce.current) return;
-    // Если черновик повреждён/чужой и пользователь ещё не решил — не перезаписываем.
-    if (notice.kind === "corrupted" || notice.kind === "foreign") return;
+    if (!state.set || !state.attemptId) return;
+    // Не перезаписываем при повреждённом/чужом черновике до явного сброса.
+    if (draftNotice.kind === "corrupted" || draftNotice.kind === "foreign") return;
+
+    const currentTask = state.set.tasks[state.currentIndex];
     const draft: Draft = {
       version: DRAFT_VERSION,
-      setId: trainingSet.id,
-      taskId: tasks[state.currentIndex]?.id ?? "",
+      setId: state.set.id,
+      attemptId: state.attemptId,
+      taskId: currentTask?.id ?? "",
       answers: state.answers,
-      status: state.status,
+      status: state.attemptStatus === "submitted" ? "submitted" : "in-progress",
     };
-    try {
-      localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
-      if (notice.kind === "write-failed") setNotice({ kind: "none" });
-    } catch {
-      setNotice({ kind: "write-failed" });
-    }
-  }, [state.answers, state.currentIndex, state.status, notice.kind, tasks]);
+    const ok = writeDraft(draft);
+    setStorageWarning(ok ? null : "Черновик не сохраняется: localStorage недоступен.");
+  }, [
+    state.set,
+    state.attemptId,
+    state.answers,
+    state.currentIndex,
+    state.attemptStatus,
+    draftNotice.kind,
+  ]);
 
-  function handleAnswerChange(newAnswer: Answer) {
-    dispatch({ type: "answerChanged", answer: newAnswer });
+  // ---------- Обработчики ----------
+
+  async function saveAnswer(answer: Answer, demoFail = false) {
+    if (!state.attemptId) return;
+    dispatch({ type: "requestStarted" });
+    try {
+      await putAnswer(state.attemptId, answer, demoFail);
+      dispatch({ type: "answerConfirmed", answer });
+    } catch (e) {
+      dispatch({
+        type: "requestFailed",
+        message: errorMessage(e),
+        lastFailed: { kind: "put", answer },
+      });
+    }
+  }
+
+  async function handleAnswerChange(next: Answer) {
+    if (!state.set || state.attemptStatus === "submitted") return;
+    const task = findTask(state.set, next.taskId);
+    if (!task) return;
+    const validation = validateAnswerForTask(next, task);
+    if (validation) {
+      setFormError(validation);
+      return;
+    }
+    setFormError(null);
+    dispatch({ type: "answerChanged", answer: next });
+    await saveAnswer(next);
+  }
+
+  async function handleClear() {
+    if (!state.set || !state.attemptId || state.attemptStatus === "submitted") return;
+    const task = state.set.tasks[state.currentIndex];
+    if (!task) return;
+    dispatch({ type: "requestStarted" });
+    try {
+      await deleteAnswer(state.attemptId, task.id);
+      dispatch({ type: "answerCleared", taskId: task.id });
+    } catch (e) {
+      dispatch({
+        type: "requestFailed",
+        message: errorMessage(e),
+        lastFailed: { kind: "delete", taskId: task.id },
+      });
+    }
+  }
+
+  async function handleSubmit() {
+    if (!state.attemptId || state.attemptStatus === "submitted") return;
+    if (state.request.status === "loading") return;
+    const unfinished: string[] = [];
+    state.set?.tasks.forEach((task, i) => {
+      const answer = findAnswer(state.answers, task.id);
+      if (!answer || !answer.taskId) {
+        unfinished.push(`${i + 1}. ${task.prompt}`);
+      }
+    });
+    if (unfinished.length > 0) {
+      const ok = window.confirm(
+        "Есть незаполненные задания:\n" +
+          unfinished.map((u) => "- " + u).join("\n") +
+          "\n\nЗавершить попытку?"
+      );
+      if (!ok) return;
+    }
+    dispatch({ type: "requestStarted" });
+    try {
+      const result = await submitAttempt(state.attemptId);
+      dispatch({ type: "submitted", result });
+    } catch (e) {
+      dispatch({
+        type: "requestFailed",
+        message: errorMessage(e),
+        lastFailed: { kind: "submit" },
+      });
+    }
+  }
+
+  function retryLast() {
+    const failed = state.request.status === "error" ? state.request.lastFailed : null;
+    if (!failed) return;
+    if (failed.kind === "put") void saveAnswer(failed.answer);
+    if (failed.kind === "delete") void handleClear();
+    if (failed.kind === "submit") void handleSubmit();
+    if (failed.kind === "init") window.location.reload();
+  }
+
+  function handleReset() {
+    if (!window.confirm("Сбросить черновик и начать новую попытку?")) return;
+    clearDraft();
+    setDraftNotice({ kind: "none" });
+    setFormError(null);
+    setStorageWarning(null);
+    // Перезагрузка — самый простой способ получить новую попытку на сервере.
+    window.location.reload();
   }
 
   function goPrev() {
@@ -156,89 +393,75 @@ export default function App() {
     dispatch({ type: "moved", index: state.currentIndex + 1 });
   }
 
-  function unfinishedList(): string[] {
-    const result: string[] = [];
-    tasks.forEach((task, i) => {
-      const answer = findAnswer(state.answers, task.id);
-      if (!answer || !isAnswerFilled(answer)) {
-        result.push(`${i + 1}. ${task.prompt}`);
-      }
-    });
-    return result;
-  }
+  // ---------- Рендер ----------
 
-  function handleFinish() {
-    if (state.status === "submitted") return;
-    const unfinished = unfinishedList();
-    if (unfinished.length > 0) {
-      const ok = window.confirm(
-        "Есть незаполненные задания:\n" +
-          unfinished.map((u) => "- " + u).join("\n") +
-          "\n\nЗавершить попытку?"
-      );
-      if (!ok) return;
-    }
-    dispatch({ type: "submitted" });
-  }
-
-  function handleReset() {
-    if (!window.confirm("Сбросить черновик и начать новую попытку?")) return;
-    try {
-      localStorage.removeItem(DRAFT_STORAGE_KEY);
-    } catch {
-      // Даже если удалить не удалось — продолжаем в памяти.
-    }
-    setNotice({ kind: "none" });
-    dispatch({ type: "reset" });
-  }
-
-  function renderNotice() {
-    switch (notice.kind) {
-      case "none":
-        return null;
-      case "corrupted":
-        return (
-          <div role="alert" style={{ border: "1px solid #c33", padding: "0.5rem", margin: "0.5rem 0" }}>
-            <p>Черновик повреждён: {notice.message}. Ввод доступен, сброс — по кнопке.</p>
-            <button type="button" onClick={handleReset}>Сбросить черновик</button>
-          </div>
-        );
-      case "foreign":
-        return (
-          <div role="alert" style={{ border: "1px solid #c33", padding: "0.5rem", margin: "0.5rem 0" }}>
-            <p>Черновик относится к набору «{notice.setId}», а не к «{trainingSet.id}».</p>
-            <button type="button" onClick={handleReset}>Сбросить и начать заново</button>
-          </div>
-        );
-      case "write-failed":
-        return (
-          <p role="status" style={{ color: "#a60" }}>
-            Черновик не сохраняется: localStorage недоступен. Ввод продолжается в этой вкладке.
-          </p>
-        );
-    }
-  }
-
-  if (tasks.length === 0) {
+  if (!state.set) {
     return (
       <main style={{ padding: "1rem", fontFamily: "system-ui" }}>
-        <h1>{trainingSet.title}</h1>
-        <p>В наборе нет заданий.</p>
+        <h1>Тренажёр</h1>
+        {state.request.status === "error" ? (
+          <div role="alert">
+            <p>Ошибка загрузки: {state.request.message}</p>
+            <button type="button" onClick={retryLast}>Повторить</button>
+          </div>
+        ) : (
+          <p>Загрузка набора…</p>
+        )}
       </main>
     );
   }
 
-  if (state.status === "submitted") {
+  const set = state.set;
+  const tasks = set.tasks;
+  const currentTask = tasks[state.currentIndex];
+  const currentAnswer = currentTask ? findAnswer(state.answers, currentTask.id) : undefined;
+  const progress = countProgress(set, state.answers);
+  const busy = state.request.status === "loading";
+  const submitted = state.attemptStatus === "submitted";
+
+  function renderDraftNotice() {
+    if (draftNotice.kind === "corrupted") {
+      return (
+        <div role="alert" style={{ border: "1px solid #c33", padding: "0.5rem", margin: "0.5rem 0" }}>
+          <p>Черновик повреждён: {draftNotice.message}</p>
+          <button type="button" onClick={handleReset}>Сбросить черновик</button>
+        </div>
+      );
+    }
+    if (draftNotice.kind === "foreign") {
+      return (
+        <div role="alert" style={{ border: "1px solid #c33", padding: "0.5rem", margin: "0.5rem 0" }}>
+          <p>Черновик относится к набору «{draftNotice.setId}».</p>
+          <button type="button" onClick={handleReset}>Сбросить и начать заново</button>
+        </div>
+      );
+    }
+    return null;
+  }
+
+  function renderRequestError() {
+    if (state.request.status !== "error") return null;
+    return (
+      <div role="alert" style={{ border: "1px solid #c33", padding: "0.5rem", margin: "0.5rem 0" }}>
+        <p>Ошибка: {state.request.message}</p>
+        <button type="button" onClick={retryLast} disabled={busy}>Повторить</button>
+      </div>
+    );
+  }
+
+  if (submitted) {
     return (
       <main style={{ padding: "1rem", fontFamily: "system-ui" }}>
-        <h1>{trainingSet.title}</h1>
-        {renderNotice()}
+        <h1>{set.title}</h1>
+        {renderDraftNotice()}
+        {storageWarning && <p role="status" style={{ color: "#a60" }}>{storageWarning}</p>}
+        {renderRequestError()}
         <p>Попытка завершена</p>
-        <p>Прогресс: {progress.filled} / {progress.total}</p>
+        {state.result ? <ResultView result={state.result} /> : <p>Результат загружается…</p>}
 
         <h2>Обзор ответов</h2>
         {tasks.map((task, i) => {
-          const answer = findAnswer(state.answers, task.id);
+          const answer = findAnswer(state.serverAnswers, task.id);
           return (
             <section key={task.id}>
               <p>Задание {i + 1}</p>
@@ -256,31 +479,45 @@ export default function App() {
 
   return (
     <main style={{ padding: "1rem", fontFamily: "system-ui" }}>
-      <h1>{trainingSet.title}</h1>
-      {renderNotice()}
+      <h1>{set.title}</h1>
+      {renderDraftNotice()}
+      {storageWarning && <p role="status" style={{ color: "#a60" }}>{storageWarning}</p>}
+      {renderRequestError()}
       <p>Задание {state.currentIndex + 1} / {tasks.length}</p>
-      <p>Прогресс: {progress.filled} / {progress.total}</p>
+      <ProgressBar filled={progress.filled} total={progress.total} />
+
+      {formError && <p role="alert" style={{ color: "#c33" }}>{formError}</p>}
 
       {currentTask ? (
         <TaskCard
           task={currentTask}
           answer={currentAnswer}
           onAnswerChange={handleAnswerChange}
-          readOnly={false}
+          onAnswerClear={handleClear}
+          disabled={busy}
+          pending={currentTask ? state.pending[currentTask.id] === true : false}
         />
       ) : (
         <p>Задание не найдено.</p>
       )}
 
       <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem" }}>
-        <button type="button" onClick={goPrev} disabled={state.currentIndex === 0}>
+        <button type="button" onClick={goPrev} disabled={state.currentIndex === 0 || busy}>
           Назад
         </button>
         {state.currentIndex < tasks.length - 1 ? (
-          <button type="button" onClick={goNext}>Дальше</button>
+          <button type="button" onClick={goNext} disabled={busy}>Дальше</button>
         ) : (
-          <button type="button" onClick={handleFinish}>Завершить попытку</button>
+          <button type="button" onClick={handleSubmit} disabled={busy}>
+            {busy ? "Отправка…" : "Завершить попытку"}
+          </button>
         )}
+      </div>
+
+      <div style={{ marginTop: "1rem" }}>
+        <button type="button" onClick={handleReset} disabled={busy}>
+          Сбросить попытку
+        </button>
       </div>
     </main>
   );
